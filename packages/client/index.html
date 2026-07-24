@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Fellowship Raid</title>
+    <style>
+      html, body {
+        margin: 0;
+        height: 100%;
+        background: #12141c;
+        color: #e5e7eb;
+        font-family: system-ui, sans-serif;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 12px;
+      }
+      #hud {
+        font-size: 14px;
+        opacity: 0.75;
+      }
+      canvas {
+        border: 1px solid #2a2f3d;
+        border-radius: 8px;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="hud">연결 중…</div>
+    <div id="game"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
