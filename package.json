@@ -1,5 +1,5 @@
 {
-  "name": "fellowship-raid",
+  "name": "boro-raid",
   "version": "0.0.1",
   "private": true,
   "description": "웹 기반 실시간 협동 레이드 게임",
@@ -9,10 +9,10 @@
     "packages/client"
   ],
   "scripts": {
-    "dev": "npm run build --workspace @fellowship/shared && concurrently -n server,client -c cyan,magenta \"npm:dev:server\" \"npm:dev:client\"",
-    "dev:server": "npm run dev --workspace @fellowship/server",
-    "dev:client": "npm run dev --workspace @fellowship/client",
-    "build:shared": "npm run build --workspace @fellowship/shared"
+    "dev": "npm run build --workspace @boro/shared && concurrently -n server,client -c cyan,magenta \"npm:dev:server\" \"npm:dev:client\"",
+    "dev:server": "npm run dev --workspace @boro/server",
+    "dev:client": "npm run dev --workspace @boro/client",
+    "build:shared": "npm run build --workspace @boro/shared"
   },
   "devDependencies": {
     "concurrently": "^9.1.0"

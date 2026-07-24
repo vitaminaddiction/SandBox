@@ -1,5 +1,5 @@
 {
-  "name": "@fellowship/client",
+  "name": "@boro/client",
   "version": "0.0.1",
   "private": true,
   "type": "module",
@@ -9,7 +9,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@fellowship/shared": "*",
+    "@boro/shared": "*",
     "colyseus.js": "^0.16.0",
     "pixi.js": "^8.6.0"
   },

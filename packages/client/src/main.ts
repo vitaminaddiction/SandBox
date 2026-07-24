@@ -1,25 +1,33 @@
 import { Application, Container, Graphics, Text } from "pixi.js";
-import { Client, Room } from "colyseus.js";
+import { Client, getStateCallbacks, Room } from "colyseus.js";
 import {
   AimMessage,
   BlastEvent,
-  DamageEvent,
-  DUMMY_RADIUS,
   EV_BLAST,
-  EV_DAMAGE,
+  EV_FLOAT,
+  EV_GOLEM_HIT,
+  EV_HEAL,
   EV_SWING,
+  FloatEvent,
+  GolemHitEvent,
+  GOLEM_RADIUS,
+  HealEvent,
+  HEAL_RADIUS,
   InputMessage,
   MSG_ATTACK,
   MSG_INPUT,
+  MSG_ROLE,
   MSG_SKILL,
   PLAYER_RADIUS,
   RAID_ROOM,
+  Role,
+  ROLE_STATS,
   SERVER_PORT,
   SKILL_RADIUS,
   SwingEvent,
   WORLD_HEIGHT,
   WORLD_WIDTH,
-} from "@fellowship/shared";
+} from "@boro/shared";
 
 const hud = document.getElementById("hud")!;
 
@@ -35,30 +43,35 @@ document.getElementById("game")!.appendChild(app.canvas);
 app.canvas.addEventListener("contextmenu", (e) => e.preventDefault());
 
 const worldLayer = new Container();
+const targetLine = new Graphics(); // 골렘 → 대상 연결선
 const fxLayer = new Container();
-app.stage.addChild(worldLayer, fxLayer);
+app.stage.addChild(worldLayer, targetLine, fxLayer);
 
-// ── 하단 상태 바 (HP / 마나 / 스킬) ─────────────────────────
+// ── 하단 상태 바 ────────────────────────────────────────────
 const statusBar = document.createElement("div");
 statusBar.style.cssText =
-  "display:flex;gap:16px;align-items:center;font-size:13px;width:800px;justify-content:center";
+  "display:flex;gap:14px;align-items:center;font-size:13px;width:800px;justify-content:center;flex-wrap:wrap";
 statusBar.innerHTML = `
-  <span>HP <b id="hp-val">100</b></span>
-  <div style="width:180px;height:12px;background:#333;border-radius:6px;overflow:hidden">
+  <span id="role-tag" style="padding:2px 8px;border-radius:4px;font-weight:bold">딜러</span>
+  <span>HP <b id="hp-val">0</b></span>
+  <div style="width:150px;height:12px;background:#333;border-radius:6px;overflow:hidden">
     <div id="hp-bar" style="height:100%;width:100%;background:#4ade80"></div>
   </div>
-  <span>MP <b id="mp-val">100</b></span>
-  <div style="width:180px;height:12px;background:#333;border-radius:6px;overflow:hidden">
+  <span>MP <b id="mp-val">0</b></span>
+  <div style="width:150px;height:12px;background:#333;border-radius:6px;overflow:hidden">
     <div id="mp-bar" style="height:100%;width:100%;background:#60a5fa"></div>
   </div>
-  <span id="skill-state" style="min-width:120px">스킬(Q): <b style="color:#4ade80">준비됨</b></span>
+  <span id="skill-state" style="min-width:130px"></span>
 `;
 document.body.appendChild(statusBar);
+const roleTag = document.getElementById("role-tag")!;
 const hpVal = document.getElementById("hp-val")!;
 const hpBar = document.getElementById("hp-bar")! as HTMLElement;
 const mpVal = document.getElementById("mp-val")!;
 const mpBar = document.getElementById("mp-bar")! as HTMLElement;
 const skillState = document.getElementById("skill-state")!;
+
+const hex = (n: number) => "#" + n.toString(16).padStart(6, "0");
 
 // ── 서버 접속 ───────────────────────────────────────────────
 const client = new Client(`ws://${location.hostname}:${SERVER_PORT}`);
@@ -66,74 +79,92 @@ let room: Room;
 try {
   room = await client.joinOrCreate(RAID_ROOM);
   hud.textContent =
-    "이동: WASD/방향키  ·  기본공격: 마우스 좌클릭(홀드)  ·  스킬: Q 또는 우클릭  ·  더미를 잡아보세요!";
+    "이동: WASD  ·  기본공격: 좌클릭(홀드)  ·  스킬: Q/우클릭  ·  역할전환: 1탱커 2힐러 3딜러";
 } catch (err) {
   hud.textContent = "❌ 서버 접속 실패 — 서버가 켜져 있나요?";
   throw err;
 }
 
 // ── 엔티티 렌더링 ───────────────────────────────────────────
-interface EntityView {
+interface PlayerView {
+  container: Container;
+  body: Graphics;
+  hpFill: Graphics;
+  roleText: Text;
+  respawnText: Text;
+  role: Role | "";
+}
+interface EnemyView {
   container: Container;
   hpFill: Graphics;
-  hpWidth: number;
 }
-const players = new Map<string, EntityView>();
-const enemies = new Map<string, EntityView>();
+const players = new Map<string, PlayerView>();
+const enemies = new Map<string, EnemyView>();
 
 function makeBar(width: number, y: number, color: number): { bg: Graphics; fill: Graphics } {
   const bg = new Graphics().rect(-width / 2, y, width, 5).fill(0x000000);
   const fill = new Graphics().rect(0, y, width, 5).fill(color);
-  fill.pivot.x = 0;
   fill.x = -width / 2;
   return { bg, fill };
 }
 
-function addPlayer(sessionId: string, color: string) {
+function drawBody(view: PlayerView, color: string, role: Role, isSelf: boolean) {
+  const g = view.body;
+  g.clear();
+  g.circle(0, 0, PLAYER_RADIUS).fill(color);
+  g.circle(0, 0, PLAYER_RADIUS).stroke({ width: 3, color: ROLE_STATS[role].color });
+  if (isSelf) g.circle(0, 0, PLAYER_RADIUS + 4).stroke({ width: 2, color: 0xffffff });
+}
+
+function addPlayer(sessionId: string, player: any) {
   const container = new Container();
-  const body = new Graphics().circle(0, 0, PLAYER_RADIUS).fill(color);
-  if (sessionId === room.sessionId) {
-    body.circle(0, 0, PLAYER_RADIUS + 4).stroke({ width: 2, color: 0xffffff });
-  }
-  const { bg, fill } = makeBar(40, -(PLAYER_RADIUS + 14), 0x4ade80);
-  container.addChild(body, bg, fill);
+  const body = new Graphics();
+  const { bg, fill } = makeBar(40, -(PLAYER_RADIUS + 16), 0x4ade80);
+  const roleText = new Text({ text: "", style: { fill: 0xffffff, fontSize: 11, fontWeight: "bold" } });
+  roleText.anchor.set(0.5);
+  roleText.y = -(PLAYER_RADIUS + 30);
+  const respawnText = new Text({ text: "", style: { fill: 0xffffff, fontSize: 13, fontWeight: "bold" } });
+  respawnText.anchor.set(0.5);
+  respawnText.visible = false;
+  container.addChild(body, bg, fill, roleText, respawnText);
   worldLayer.addChild(container);
-  players.set(sessionId, { container, hpFill: fill, hpWidth: 40 });
+
+  const view: PlayerView = { container, body, hpFill: fill, roleText, respawnText, role: "" };
+  const isSelf = sessionId === room.sessionId;
+  drawBody(view, player.color, player.role, isSelf);
+  view.role = player.role;
+  players.set(sessionId, view);
 }
 
 function addEnemy(id: string) {
   const container = new Container();
   const body = new Graphics()
-    .circle(0, 0, DUMMY_RADIUS)
+    .circle(0, 0, GOLEM_RADIUS)
     .fill(0x7f1d1d)
-    .circle(0, 0, DUMMY_RADIUS)
+    .circle(0, 0, GOLEM_RADIUS)
     .stroke({ width: 3, color: 0xef4444 });
-  const label = new Text({
-    text: "연습용 더미",
-    style: { fill: 0xfca5a5, fontSize: 11 },
-  });
+  const label = new Text({ text: "훈련 골렘", style: { fill: 0xfca5a5, fontSize: 11 } });
   label.anchor.set(0.5);
   label.y = 4;
-  const { bg, fill } = makeBar(70, -(DUMMY_RADIUS + 16), 0xef4444);
+  const { bg, fill } = makeBar(80, -(GOLEM_RADIUS + 16), 0xef4444);
   container.addChild(body, label, bg, fill);
   worldLayer.addChild(container);
-  enemies.set(id, { container, hpFill: fill, hpWidth: 70 });
+  enemies.set(id, { container, hpFill: fill });
 }
 
-room.state.players.onAdd((player: any, sessionId: string) => {
-  addPlayer(sessionId, player.color);
-});
-room.state.players.onRemove((_p: any, sessionId: string) => {
+const $ = getStateCallbacks(room);
+$(room.state).players.onAdd((player: any, sessionId: string) => addPlayer(sessionId, player));
+$(room.state).players.onRemove((_p: any, sessionId: string) => {
   players.get(sessionId)?.container.destroy();
   players.delete(sessionId);
 });
-room.state.enemies.onAdd((_enemy: any, id: string) => addEnemy(id));
-room.state.enemies.onRemove((_e: any, id: string) => {
+$(room.state).enemies.onAdd((_e: any, id: string) => addEnemy(id));
+$(room.state).enemies.onRemove((_e: any, id: string) => {
   enemies.get(id)?.container.destroy();
   enemies.delete(id);
 });
 
-// ── 일회성 이펙트 (스윙 / 폭발 / 대미지 숫자) ───────────────
+// ── 일회성 이펙트 ───────────────────────────────────────────
 interface Fx {
   obj: Container;
   age: number;
@@ -149,10 +180,7 @@ function addFx(obj: Container, ttl: number, tick: Fx["tick"]) {
 room.onMessage(EV_SWING, (e: SwingEvent) => {
   const g = new Graphics();
   const spread = 0.6;
-  g.moveTo(0, 0)
-    .arc(0, 0, 95, e.angle - spread, e.angle + spread)
-    .lineTo(0, 0)
-    .fill({ color: 0xffffff, alpha: 0.25 });
+  g.moveTo(0, 0).arc(0, 0, 95, e.angle - spread, e.angle + spread).lineTo(0, 0).fill({ color: 0xffffff, alpha: 0.25 });
   g.position.set(e.x, e.y);
   addFx(g, 0.18, (fx, t) => (fx.obj.alpha = 1 - t));
 });
@@ -166,14 +194,33 @@ room.onMessage(EV_BLAST, (e: BlastEvent) => {
   });
 });
 
-room.onMessage(EV_DAMAGE, (e: DamageEvent) => {
+room.onMessage(EV_HEAL, (e: HealEvent) => {
+  const g = new Graphics().circle(0, 0, HEAL_RADIUS).fill({ color: 0x22c55e, alpha: 0.18 });
+  g.position.set(e.x, e.y);
+  addFx(g, 0.45, (fx, t) => {
+    fx.obj.alpha = 0.25 * (1 - t);
+    fx.obj.scale.set(0.4 + 0.6 * t);
+  });
+});
+
+room.onMessage(EV_GOLEM_HIT, (e: GolemHitEvent) => {
+  const g = new Graphics().circle(0, 0, PLAYER_RADIUS + 6).stroke({ width: 3, color: 0xef4444 });
+  g.position.set(e.x, e.y);
+  addFx(g, 0.25, (fx, t) => {
+    fx.obj.alpha = 1 - t;
+    fx.obj.scale.set(1 + 0.4 * t);
+  });
+});
+
+const FLOAT_COLOR = { hit: 0xfde047, hurt: 0xf87171, heal: 0x4ade80 } as const;
+room.onMessage(EV_FLOAT, (e: FloatEvent) => {
   const txt = new Text({
-    text: `${Math.round(e.amount)}`,
-    style: { fill: 0xfde047, fontSize: 18, fontWeight: "bold" },
+    text: (e.kind === "heal" ? "+" : "") + Math.round(e.amount),
+    style: { fill: FLOAT_COLOR[e.kind], fontSize: e.kind === "hit" ? 18 : 16, fontWeight: "bold" },
   });
   txt.anchor.set(0.5);
-  txt.position.set(e.x + (Math.random() * 24 - 12), e.y - DUMMY_RADIUS);
-  addFx(txt, 0.8, (fx, t) => {
+  txt.position.set(e.x + (Math.random() * 24 - 12), e.y - 24);
+  addFx(txt, 0.85, (fx, t) => {
     fx.obj.y -= 0.6;
     fx.obj.alpha = 1 - t;
   });
@@ -182,8 +229,12 @@ room.onMessage(EV_DAMAGE, (e: DamageEvent) => {
 // ── 입력 ────────────────────────────────────────────────────
 const keys = new Set<string>();
 window.addEventListener("keydown", (e) => {
-  keys.add(e.key.toLowerCase());
-  if (e.key.toLowerCase() === "q") sendSkill();
+  const k = e.key.toLowerCase();
+  keys.add(k);
+  if (k === "q") sendSkill();
+  else if (k === "1") room.send(MSG_ROLE, { role: "tank" as Role });
+  else if (k === "2") room.send(MSG_ROLE, { role: "healer" as Role });
+  else if (k === "3") room.send(MSG_ROLE, { role: "dps" as Role });
 });
 window.addEventListener("keyup", (e) => keys.delete(e.key.toLowerCase()));
 
@@ -202,12 +253,10 @@ app.canvas.addEventListener("mousedown", (e) => {
 window.addEventListener("mouseup", (e) => {
   if (e.button === 0) attacking = false;
 });
-
 function sendSkill() {
   if (room) room.send(MSG_SKILL, { aimX, aimY } as AimMessage);
 }
 
-// 이동 입력 (변경 시에만 전송)
 let seq = 0;
 let lastMove = "";
 function sendMove() {
@@ -233,8 +282,6 @@ app.ticker.add((ticker) => {
   const smooth = Math.min(1, dt * 15);
 
   sendMove();
-
-  // 기본공격 홀드 (60ms 간격으로 전송, 서버가 쿨다운으로 게이팅)
   if (attacking && now - lastBasic > 60) {
     room.send(MSG_ATTACK, { aimX, aimY } as AimMessage);
     lastBasic = now;
@@ -244,12 +291,26 @@ app.ticker.add((ticker) => {
   room.state.players.forEach((p: any, sessionId: string) => {
     const view = players.get(sessionId);
     if (!view) return;
+    const isSelf = sessionId === room.sessionId;
     view.container.x += (p.x - view.container.x) * smooth;
     view.container.y += (p.y - view.container.y) * smooth;
     view.hpFill.scale.x = Math.max(0, p.hp / p.maxHp);
+    // 역할 변경 반영
+    if (view.role !== p.role) {
+      drawBody(view, p.color, p.role, isSelf);
+      view.role = p.role;
+    }
+    const s = ROLE_STATS[p.role as Role];
+    view.roleText.text = s.short;
+    view.roleText.style.fill = s.color;
+    // 사망 표시
+    view.container.alpha = p.dead ? 0.25 : 1;
+    view.respawnText.visible = p.dead;
+    if (p.dead) view.respawnText.text = `부활 ${Math.ceil(p.respawnIn)}`;
   });
 
-  // 몹 갱신
+  // 골렘 갱신
+  targetLine.clear();
   room.state.enemies.forEach((e: any, id: string) => {
     const view = enemies.get(id);
     if (!view) return;
@@ -257,6 +318,16 @@ app.ticker.add((ticker) => {
     view.container.y = e.y;
     view.container.visible = e.alive;
     view.hpFill.scale.x = Math.max(0, e.hp / e.maxHp);
+    // 어그로 대상 연결선
+    if (e.alive && e.target) {
+      const tv = players.get(e.target);
+      if (tv) {
+        targetLine
+          .moveTo(e.x, e.y)
+          .lineTo(tv.container.x, tv.container.y)
+          .stroke({ width: 2, color: 0xef4444, alpha: 0.5 });
+      }
+    }
   });
 
   // 이펙트 갱신
@@ -271,19 +342,23 @@ app.ticker.add((ticker) => {
     }
   }
 
-  // 내 HUD 갱신
+  // 내 HUD
   const me: any = room.state.players.get(room.sessionId);
   if (me) {
-    hpVal.textContent = `${Math.round(me.hp)}`;
+    const s = ROLE_STATS[me.role as Role];
+    roleTag.textContent = s.label;
+    roleTag.style.background = hex(s.color);
+    roleTag.style.color = "#0b0e14";
+    hpVal.textContent = `${Math.round(me.hp)}/${me.maxHp}`;
     hpBar.style.width = `${(me.hp / me.maxHp) * 100}%`;
-    mpVal.textContent = `${Math.round(me.mana)}`;
+    mpVal.textContent = `${Math.round(me.mana)}/${me.maxMana}`;
     mpBar.style.width = `${(me.mana / me.maxMana) * 100}%`;
-    if (me.skillCd > 0) {
-      skillState.innerHTML = `스킬(Q): <b style="color:#f87171">${me.skillCd.toFixed(1)}s</b>`;
-    } else if (me.mana < 30) {
-      skillState.innerHTML = `스킬(Q): <b style="color:#f87171">마나 부족</b>`;
+    if (me.dead) {
+      skillState.innerHTML = `<b style="color:#f87171">사망 — 부활 ${Math.ceil(me.respawnIn)}s</b>`;
+    } else if (me.skillCd > 0) {
+      skillState.innerHTML = `${s.skillLabel}(Q): <b style="color:#f87171">${me.skillCd.toFixed(1)}s</b>`;
     } else {
-      skillState.innerHTML = `스킬(Q): <b style="color:#4ade80">준비됨</b>`;
+      skillState.innerHTML = `${s.skillLabel}(Q): <b style="color:#4ade80">준비됨</b>`;
     }
   }
 });
